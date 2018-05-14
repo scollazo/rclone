@@ -18,7 +18,8 @@ import (
 	"github.com/ncw/rclone/backend/onedrive/api"
 	"github.com/ncw/rclone/fs"
 	"github.com/ncw/rclone/fs/config"
-	"github.com/ncw/rclone/fs/config/flags"
+	"github.com/ncw/rclone/fs/config/configmap"
+	"github.com/ncw/rclone/fs/config/configstruct"
 	"github.com/ncw/rclone/fs/config/obscure"
 	"github.com/ncw/rclone/fs/fserrors"
 	"github.com/ncw/rclone/fs/hash"
@@ -73,8 +74,6 @@ var (
 		RedirectURL:  oauthutil.RedirectLocalhostURL,
 	}
 	oauthBusinessResource = oauth2.SetAuthURLParam("resource", discoveryServiceURL)
-
-	chunkSize = fs.SizeSuffix(10 * 1024 * 1024)
 )
 
 // Register with Fs
@@ -83,7 +82,7 @@ func init() {
 		Name:        "onedrive",
 		Description: "Microsoft OneDrive",
 		NewFs:       NewFs,
-		Config: func(name string) {
+		Config: func(name string, m configmap.Mapper) {
 			// choose account type
 			fmt.Printf("Choose OneDrive account type?\n")
 			fmt.Printf(" * Say b for a OneDrive business account\n")
@@ -92,12 +91,12 @@ func init() {
 
 			if isPersonal {
 				// for personal accounts we don't safe a field about the account
-				err := oauthutil.Config("onedrive", name, oauthPersonalConfig)
+				err := oauthutil.Config("onedrive", name, m, oauthPersonalConfig)
 				if err != nil {
 					log.Fatalf("Failed to configure token: %v", err)
 				}
 			} else {
-				err := oauthutil.ConfigErrorCheck("onedrive", name, func(req *http.Request) oauthutil.AuthError {
+				err := oauthutil.ConfigErrorCheck("onedrive", name, m, func(req *http.Request) oauthutil.AuthError {
 					var resp oauthutil.AuthError
 
 					resp.Name = req.URL.Query().Get("error")
@@ -112,7 +111,7 @@ func init() {
 				}
 
 				// Are we running headless?
-				if config.FileGet(name, config.ConfigAutomatic) != "" {
+				if automatic, _ := m.Get(config.ConfigAutomatic); automatic != "" {
 					// Yes, okay we are done
 					return
 				}
@@ -126,7 +125,7 @@ func init() {
 					Services []serviceResource `json:"value"`
 				}
 
-				oAuthClient, _, err := oauthutil.NewClient(name, oauthBusinessConfig)
+				oAuthClient, _, err := oauthutil.NewClient(name, m, oauthBusinessConfig)
 				if err != nil {
 					log.Fatalf("Failed to configure OneDrive: %v", err)
 					return
@@ -171,13 +170,13 @@ func init() {
 					foundService = config.Choose("Choose resource URL", resourcesID, resourcesURL, false)
 				}
 
-				config.FileSet(name, configResourceURL, foundService)
+				m.Set(configResourceURL, foundService)
 				oauthBusinessResource = oauth2.SetAuthURLParam("resource", foundService)
 
 				// get the token from the inital config
 				// we need to update the token with a resource
 				// specific token we will query now
-				token, err := oauthutil.GetToken(name)
+				token, err := oauthutil.GetToken(name, m)
 				if err != nil {
 					fs.Errorf(nil, "Error while getting token: %s", err)
 					return
@@ -220,7 +219,7 @@ func init() {
 				token.RefreshToken = jsonToken.RefreshToken
 
 				// finally save them in the config
-				err = oauthutil.PutToken(name, token, true)
+				err = oauthutil.PutToken(name, m, token, true)
 				if err != nil {
 					fs.Errorf(nil, "Error while setting token: %s", err)
 				}
@@ -228,20 +227,30 @@ func init() {
 		},
 		Options: []fs.Option{{
 			Name: config.ConfigClientID,
-			Help: "Microsoft App Client Id - leave blank normally.",
+			Help: "Microsoft App Client Id\nLeave blank normally.",
 		}, {
 			Name: config.ConfigClientSecret,
-			Help: "Microsoft App Client Secret - leave blank normally.",
+			Help: "Microsoft App Client Secret\nLeave blank normally.",
+		}, {
+			Name:     "chunk_size",
+			Help:     "Chunk size to upload files with - must be multiple of 320k.",
+			Default:  fs.SizeSuffix(10 * 1024 * 1024),
+			Advanced: true,
 		}},
 	})
+}
 
-	flags.VarP(&chunkSize, "onedrive-chunk-size", "", "Above this size files will be chunked - must be multiple of 320k.")
+// Options defines the configuration for this backend
+type Options struct {
+	ChunkSize   fs.SizeSuffix `config:"chunk_size"`
+	ResourceURL string        `config:"resource_url"`
 }
 
 // Fs represents a remote one drive
 type Fs struct {
 	name         string             // name of this remote
 	root         string             // the path we are working on
+	opt          Options            // parsed options
 	features     *fs.Features       // optional features
 	srv          *rest.Client       // the connection to the one drive server
 	dirCache     *dircache.DirCache // Map of directory path to directory id
@@ -343,26 +352,34 @@ func errorHandler(resp *http.Response) error {
 }
 
 // NewFs constructs an Fs from the path, container:path
-func NewFs(name, root string) (fs.Fs, error) {
-	// get the resource URL from the config file0
-	resourceURL := config.FileGet(name, configResourceURL, "")
+func NewFs(name, root string, m configmap.Mapper) (fs.Fs, error) {
+	// Parse config into Options struct
+	opt := new(Options)
+	err := configstruct.Set(m, opt)
+	if err != nil {
+		return nil, err
+	}
+	if opt.ChunkSize%(320*1024) != 0 {
+		return nil, errors.Errorf("chunk size %d is not a multiple of 320k", opt.ChunkSize)
+	}
 	// if we have a resource URL it's a business account otherwise a personal one
+	isBusiness := opt.ResourceURL != ""
 	var rootURL string
 	var oauthConfig *oauth2.Config
-	if resourceURL == "" {
+	if !isBusiness {
 		// personal account setup
 		oauthConfig = oauthPersonalConfig
 		rootURL = rootURLPersonal
 	} else {
 		// business account setup
 		oauthConfig = oauthBusinessConfig
-		rootURL = resourceURL + "_api/v2.0/drives/me"
+		rootURL = opt.ResourceURL + "_api/v2.0/drives/me"
 
 		// update the URL in the AuthOptions
-		oauthBusinessResource = oauth2.SetAuthURLParam("resource", resourceURL)
+		oauthBusinessResource = oauth2.SetAuthURLParam("resource", opt.ResourceURL)
 	}
 	root = parsePath(root)
-	oAuthClient, ts, err := oauthutil.NewClient(name, oauthConfig)
+	oAuthClient, ts, err := oauthutil.NewClient(name, m, oauthConfig)
 	if err != nil {
 		log.Fatalf("Failed to configure OneDrive: %v", err)
 	}
@@ -370,9 +387,10 @@ func NewFs(name, root string) (fs.Fs, error) {
 	f := &Fs{
 		name:       name,
 		root:       root,
+		opt:        *opt,
 		srv:        rest.NewClient(oAuthClient).SetRoot(rootURL),
 		pacer:      pacer.New().SetMinSleep(minSleep).SetMaxSleep(maxSleep).SetDecayConstant(decayConstant),
-		isBusiness: resourceURL != "",
+		isBusiness: isBusiness,
 	}
 	f.features = (&fs.Features{
 		CaseInsensitive: true,
@@ -1204,10 +1222,6 @@ func (o *Object) cancelUploadSession(url string) (err error) {
 
 // uploadMultipart uploads a file using multipart upload
 func (o *Object) uploadMultipart(in io.Reader, size int64, modTime time.Time) (info *api.Item, err error) {
-	if chunkSize%(320*1024) != 0 {
-		return nil, errors.Errorf("chunk size %d is not a multiple of 320k", chunkSize)
-	}
-
 	// Create upload session
 	fs.Debugf(o, "Starting multipart upload")
 	session, err := o.createUploadSession(modTime)
@@ -1231,7 +1245,7 @@ func (o *Object) uploadMultipart(in io.Reader, size int64, modTime time.Time) (i
 	remaining := size
 	position := int64(0)
 	for remaining > 0 {
-		n := int64(chunkSize)
+		n := int64(o.fs.opt.ChunkSize)
 		if remaining < n {
 			n = remaining
 		}
