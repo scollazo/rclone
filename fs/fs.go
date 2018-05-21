@@ -794,11 +794,12 @@ var Matcher = regexp.MustCompile(`^([\w_ -]+):(.*)$`)
 func ParseRemote(path string) (fsInfo *RegInfo, configName, fsPath string, err error) {
 	parts := Matcher.FindStringSubmatch(path)
 	var fsName string
+	var ok bool
 	fsName, configName, fsPath = "local", "local", path
 	if parts != nil && !driveletter.IsDriveLetter(parts[1]) {
 		configName, fsPath = parts[1], parts[2]
-		fsName = ConfigFileGet(configName, "type")
-		if fsName == "" {
+		fsName, ok = ConfigFileGet(configName, "type")
+		if !ok {
 			return nil, "", "", ErrorNotFoundInConfigFile
 		}
 	}
