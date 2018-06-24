@@ -916,6 +916,40 @@ func NewRemoteName() (name string) {
 	}
 }
 
+// editOptions edits the options.  If new is true then it just allows
+// entry and doesn't show any old values.
+func editOptions(ri *fs.RegInfo, name string, new bool) {
+	hasAdvanced := false
+	for _, advanced := range []bool{false, true} {
+		if advanced {
+			if !hasAdvanced {
+				break
+			}
+			fmt.Printf("Edit advanced config? (y/n)\n")
+			if !Confirm() {
+				break
+			}
+		}
+		for _, option := range ri.Options {
+			hasAdvanced = hasAdvanced || option.Advanced
+			if option.Advanced != advanced {
+				continue
+			}
+			subProvider := getConfigData().MustValue(name, fs.ConfigProvider, "")
+			if matchProvider(option.Provider, subProvider) {
+				if !new {
+					fmt.Printf("Value %q = %q\n", option.Name, FileGet(name, option.Name))
+					fmt.Printf("Edit? (y/n)>\n")
+					if !Confirm() {
+						continue
+					}
+				}
+				FileSet(name, option.Name, ChooseOption(&option, name))
+			}
+		}
+	}
+}
+
 // NewRemote make a new remote from its name
 func NewRemote(name string) {
 	var (
@@ -923,6 +957,8 @@ func NewRemote(name string) {
 		ri      *fs.RegInfo
 		err     error
 	)
+
+	// Set the type first
 	for {
 		newType = ChooseOption(fsOption(), name)
 		ri, err = fs.Find(newType)
@@ -933,12 +969,8 @@ func NewRemote(name string) {
 		break
 	}
 	getConfigData().SetValue(name, "type", newType)
-	for _, option := range ri.Options {
-		subProvider := getConfigData().MustValue(name, fs.ConfigProvider, "")
-		if matchProvider(option.Provider, subProvider) {
-			FileSet(name, option.Name, ChooseOption(&option, name))
-		}
-	}
+
+	editOptions(ri, name, true)
 	RemoteConfig(name)
 	if OkRemote(name) {
 		SaveConfig()
@@ -951,25 +983,8 @@ func NewRemote(name string) {
 func EditRemote(ri *fs.RegInfo, name string) {
 	ShowRemote(name)
 	fmt.Printf("Edit remote\n")
-	subProvider := getConfigData().MustValue(name, fs.ConfigProvider, "")
 	for {
-		for _, option := range ri.Options {
-			key := option.Name
-			value := FileGet(name, key)
-			if !matchProvider(option.Provider, subProvider) {
-				continue
-			}
-			fmt.Printf("Value %q = %q\n", key, value)
-			fmt.Printf("Edit? (y/n)>\n")
-			if Confirm() {
-				newValue := ChooseOption(&option, name)
-				getConfigData().SetValue(name, key, newValue)
-				// Update subProvider if it changed
-				if key == fs.ConfigProvider {
-					subProvider = newValue
-				}
-			}
-		}
+		editOptions(ri, name, false)
 		if OkRemote(name) {
 			break
 		}
