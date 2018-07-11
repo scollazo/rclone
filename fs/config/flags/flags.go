@@ -80,6 +80,15 @@ func IntP(name, shorthand string, value int, usage string) (out *int) {
 	return out
 }
 
+// UintP defines a flag which can be overridden by an environment variable
+//
+// It is a thin wrapper around pflag.UintP
+func UintP(name, shorthand string, value uint, usage string) (out *uint) {
+	out = pflag.UintP(name, shorthand, value, usage)
+	setDefaultFromEnv(name)
+	return out
+}
+
 // Int64P defines a flag which can be overridden by an environment variable
 //
 // It is a thin wrapper around pflag.IntP
