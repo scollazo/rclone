@@ -187,6 +187,11 @@ Upload chunk size.  Default 4MB.  Note that this is stored in memory
 and there may be up to `--transfers` chunks stored at once in memory.
 This can be at most 100MB.
 
+#### --azureblob-list-chunk-size=SIZE ####
+
+Number of items to read at once. Default is set to the maximum, 5000.
+Useful when using `--fast-list` causes timeouts
+
 ### Limitations ###
 
 MD5 sums are only uploaded with chunked files if the source has an MD5
