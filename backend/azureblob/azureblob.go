@@ -36,7 +36,6 @@ const (
 	minSleep      = 10 * time.Millisecond
 	maxSleep      = 10 * time.Second
 	decayConstant = 1    // bigger for slower decay, exponential
-	listChunkSize = 5000 // number of items to read at once
 	modTimeKey    = "mtime"
 	timeFormatIn  = time.RFC3339
 	timeFormatOut = "2006-01-02T15:04:05.000000000Z07:00"
@@ -50,6 +49,7 @@ var (
 	chunkSize       = fs.SizeSuffix(4 * 1024 * 1024)
 	uploadCutoff    = fs.SizeSuffix(256 * 1024 * 1024)
 	maxUploadCutoff = fs.SizeSuffix(256 * 1024 * 1024)
+	listChunkSize   = flags.UintP("azure-list-chunk-size", "", 5000, "Number of items to read at once")
 )
 
 // Register with Fs
@@ -183,6 +183,9 @@ func NewFs(name, root string) (fs.Fs, error) {
 	}
 	if chunkSize > maxChunkSize {
 		return nil, errors.Errorf("azure: chunk size can't be greater than %v - was %v", maxChunkSize, chunkSize)
+	}
+        if *listChunkSize >  5000 {
+		return nil, errors.Errorf("azure: list chunk size can't be greater than 5000 - was %v", *listChunkSize)
 	}
 	container, directory, err := parsePath(root)
 	if err != nil {
@@ -436,7 +439,7 @@ func (f *Fs) markContainerOK() {
 
 // listDir lists a single directory
 func (f *Fs) listDir(dir string) (entries fs.DirEntries, err error) {
-	err = f.list(dir, false, listChunkSize, func(remote string, object *storage.Blob, isDirectory bool) error {
+	err = f.list(dir, false, *listChunkSize, func(remote string, object *storage.Blob, isDirectory bool) error {
 		entry, err := f.itemToDirEntry(remote, object, isDirectory)
 		if err != nil {
 			return err
@@ -508,11 +511,12 @@ func (f *Fs) List(dir string) (entries fs.DirEntries, err error) {
 // Don't implement this unless you have a more efficient way
 // of listing recursively that doing a directory traversal.
 func (f *Fs) ListR(dir string, callback fs.ListRCallback) (err error) {
+
 	if f.container == "" {
 		return fs.ErrorListBucketRequired
 	}
 	list := walk.NewListRHelper(callback)
-	err = f.list(dir, true, listChunkSize, func(remote string, object *storage.Blob, isDirectory bool) error {
+	err = f.list(dir, true, *listChunkSize, func(remote string, object *storage.Blob, isDirectory bool) error {
 		entry, err := f.itemToDirEntry(remote, object, isDirectory)
 		if err != nil {
 			return err
